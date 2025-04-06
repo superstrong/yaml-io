@@ -1,6 +1,6 @@
-# YAML_IO
+# YAML-io
 
-This library enables YAML anchors to be imported from external files, and re-exported for use in other files, via custom directives. This has a few benefits:
+This Python library enables YAML anchors to be imported from external files, and re-exported for use in other files, via custom directives. This has a few benefits:
 
 - Re-use the same aliases in multiple files without repeating yourself
 - Use aliases without worrying about reordering your file, because the anchors are defined elsewhere
@@ -22,7 +22,7 @@ This library enables YAML anchors to be imported from external files, and re-exp
 
 2. There are no code changes.
 
-```
+```python
 import yaml
 import yaml_io  # triggers the patch
 
@@ -34,19 +34,19 @@ with open("some_yaml.yaml") as f:
 
 Mark directives in your YAML like:
 
-```
+```yaml
 #!import ../../global/prod-default/base-package.yml as base
 ```
 
 and refer to imported anchors as:
 
-```
+```yaml
 - *base.progress_check_model
 ```
 
 Anchors defined directly in the file are automatically available to downstream files. Imported anchors need to be re‑exported with a directive like:
 
-```
+```yaml
 #!export base.progress_check_model
 ```
 
@@ -54,7 +54,7 @@ Anchors defined directly in the file are automatically available to downstream f
 
 A versioned file containing all the anchors we want to define once. Imagine we have multiple files and many anchors.
 
-```
+```yaml
 ./global/versions/v1.2/actions.yml
 
 - &anchor1
@@ -70,10 +70,9 @@ A router-like file where we refer to the versioned files and export them for re-
 #!export a.anchor1, a.anchor2
 ```
 
-The most downstream file where all anchors are resolved and used as aliases:
-```
-./workspace/acme/actions.yml
+The most downstream file where all anchors are resolved and used as aliases, such as this example `./workspace/acme/actions.yml`:
 
+```yaml
 #!import ../../global/prod-default/base-package.yml as base
 
 - *base.anchor1
