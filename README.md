@@ -1,4 +1,4 @@
-# YAML_IO
+# YAML IO
 
 This library enables YAML anchors to be imported from external files, and re-exported for use in other files, via custom directives. This has a few benefits:
 
