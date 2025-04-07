@@ -4,7 +4,7 @@ setuptools.setup(
     name="yaml_io",
     version="0.1.0",
     author="Robbie Mitchell",
-    description="Import and export YAML anchors using custom directives (monkey-patched).",
+    description="Import and export YAML anchors using custom directives.",
     long_description=open("README.md", encoding="utf-8").read(),
     long_description_content_type="text/markdown",
     packages=setuptools.find_packages(where="src"),

@@ -1,0 +1,19 @@
+[project]
+name = "yaml-io"
+version = "0.0.1"
+authors = [
+  { name="Robbie Mitchell" },
+]
+description = "Import YAML anchors from external files, and export them for re-use in other files"
+readme = "README.md"
+requires-python = ">=3.8"
+classifiers = [
+    "Programming Language :: Python :: 3",
+    "Operating System :: OS Independent",
+]
+license = "MIT"
+license-files = ["LICENSE.md"]
+
+[project.urls]
+Homepage = "https://github.com/superstrong/yaml-io"
+Issues = "https://github.com/superstrong/yaml-io/issues"
