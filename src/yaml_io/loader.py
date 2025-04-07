@@ -1,11 +1,68 @@
 import os
 import re
 import yaml
+from yaml.scanner import Scanner, ScannerError
+from yaml.tokens import AliasToken
 
-# We subclass the yaml.SafeLoader so we can customize anchor handling.
+# Custom scanner patch
+def custom_scan_anchor(self, TokenClass):
+    """
+    Custom scan_anchor method for PyYAML's scanner.
+    
+    This implementation allows a single period ('.') only if it acts as a separator
+    between an import prefix and an alias name. In other cases, a period is not allowed.
+    """
+    start_mark = self.get_mark()
+
+    # The first character must be alphanumeric or underscore.
+    ch = self.peek()
+    if not (ch.isalnum() or ch == '_'):
+        raise ScannerError("while scanning an alias", start_mark,
+                             f"expected alphabetic or numeric character, but found {ch!r}", self.get_mark())
+
+    alias_chars = []
+    dot_seen = False
+    while True:
+        ch = self.peek()
+        if not ch:
+            break
+
+        # Allow a period only if one has not yet been seen.
+        if ch == '.':
+            if dot_seen:
+                # A second period is not allowed; break so the token ends here.
+                break
+            dot_seen = True
+            alias_chars.append(ch)
+            self.forward()  # Consume the period
+            continue
+
+        # Allow alphanumeric and underscore characters.
+        if ch.isalnum() or ch == '_':
+            alias_chars.append(ch)
+            self.forward()
+        else:
+            # Stop scanning when a non-valid character is encountered.
+            break
+
+    alias_name = ''.join(alias_chars)
+
+    # If a period was seen, ensure it is not at the beginning or end and occurs exactly once.
+    if dot_seen:
+        if alias_name.startswith('.') or alias_name.endswith('.') or alias_name.count('.') != 1:
+            raise ScannerError("while scanning an alias", start_mark,
+                                 f"invalid alias format with period: {alias_name}", self.get_mark())
+
+    return TokenClass(alias_name, start_mark, self.get_mark())
+
+# Patch the PyYAML Scanner for the loader
+Scanner.scan_anchor = custom_scan_anchor
+
+# We subclass yaml.SafeLoader so we can inject imported anchors.
 class ImportExportYAMLLoader(yaml.SafeLoader):
     pass
 
+# Directive Parsing
 def _parse_directives(content):
     """
     Scan the YAML content for custom directives and remove them.
@@ -14,7 +71,10 @@ def _parse_directives(content):
     - "#!import <path> as <prefix>" to import anchors from another file.
     - "#!export ..." to explicitly export imported anchors.
     
-    Return the cleaned content, a list of import directives, and a list of explicit exports.
+    Returns:
+      - cleaned YAML content (with directives removed)
+      - a list of import directives (each a dict with 'path' and 'prefix')
+      - a list of explicit export strings.
     """
     lines = content.splitlines()
     processed_lines = []
@@ -38,6 +98,7 @@ def _parse_directives(content):
         processed_lines.append(line)
     return "\n".join(processed_lines), import_directives, export_directives
 
+# Main functions
 def load_imports_exports(file_path, processed_files=None):
     """
     Load a YAML file with custom import and export directives.
@@ -45,11 +106,12 @@ def load_imports_exports(file_path, processed_files=None):
     Anchors defined in this file are automatically available downstream.
     Imported anchors must be re‑exported explicitly to be passed along.
     
-    This recursively loads imported files to gather their exported anchors, prefix them,
-    and inject them into the loader before loading the YAML content.
+    This recursively loads imported files to gather their exported anchors, prefixes them
+    (using a period as a separator), and injects them into the loader before loading the YAML content.
     
-    Returns a tuple (data, exported_anchors) where 'data' is the YAML content and 
-    'exported_anchors' is a dict of anchors that this file passes downstream.
+    Returns:
+      A tuple (data, exported_anchors) where 'data' is the parsed YAML data and 
+      'exported_anchors' is a dict of anchors that this file passes downstream.
     """
     if processed_files is None:
         processed_files = set()
@@ -60,43 +122,41 @@ def load_imports_exports(file_path, processed_files=None):
 
     with open(file_path, "r") as f:
         content = f.read()
-    
-    # Remove directives from the content and capture them.
+
+    # Remove custom directives and capture import/export instructions.
     content, import_directives, explicit_exports = _parse_directives(content)
-    
-    # Gather imported anchors from each import directive.
+
+    # Process Imported Anchors
     imported_anchors = {}
     for directive in import_directives:
         import_path = os.path.join(os.path.dirname(file_path), directive['path'])
         # Recursively load the imported file to get its exported anchors.
         _, exported = load_imports_exports(import_path, processed_files)
-        # Add each imported anchor with the given prefix.
+        # Prefix each exported anchor with the directive's prefix using a period as a separator.
         for anchor, value in exported.items():
             new_anchor = f"{directive['prefix']}.{anchor}"
-            # If new_anchor already exists but points to a different object => collision
             if new_anchor in imported_anchors and imported_anchors[new_anchor] is not value:
                 raise ValueError(
                     f"Anchor collision for '{new_anchor}' imported multiple times from different sources."
                 )
             imported_anchors[new_anchor] = value
 
-    # Create a custom loader and inject the imported anchors.
+    # Create Loader and Inject Imported Anchors
     loader = ImportExportYAMLLoader(content)
     if not hasattr(loader, 'anchors'):
         loader.anchors = {}
     loader.anchors.update(imported_anchors)
-    
-    # Load the YAML content into a Python object.
+
+    # Load the YAML content.
     data = loader.get_single_data()
-    
-    # Determine which anchors were defined locally in this file.
+
+    # Determine which anchors were defined locally (i.e. not imported).
     local_anchors = {k: v for k, v in loader.anchors.items() if k not in imported_anchors}
-    
-    # Prepare the final export dictionary.
+
+    # Prepare Exported Anchors
     # Local anchors are automatically exported.
     exported_anchors = {}
     exported_anchors.update(local_anchors)
-    
     # Imported anchors must be re‑exported explicitly.
     for exp in explicit_exports:
         if '.' in exp:
@@ -106,8 +166,8 @@ def load_imports_exports(file_path, processed_files=None):
                 # Export the imported anchor under the unprefixed name.
                 exported_anchors[anchor_name] = loader.anchors[full_anchor]
         else:
-            # If the export directive has no dot, assume it's a local anchor.
+            # Assume a non-prefixed export directive refers to a local anchor.
             if exp in loader.anchors:
                 exported_anchors[exp] = loader.anchors[exp]
-    
+
     return data, exported_anchors
