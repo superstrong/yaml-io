@@ -71,7 +71,7 @@ def load_imports_exports(file_path, processed_files=None):
         # Recursively load the imported file to get its exported anchors.
         _, exported = load_imports_exports(import_path, processed_files)
         # Add each imported anchor with the given prefix.
-        for anchor, value in child_exported_anchors.items():
+        for anchor, value in exported.items():
             new_anchor = f"{directive['prefix']}.{anchor}"
             # If new_anchor already exists but points to a different object => collision
             if new_anchor in imported_anchors and imported_anchors[new_anchor] is not value:
