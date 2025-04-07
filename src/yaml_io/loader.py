@@ -4,72 +4,92 @@ import yaml
 from yaml.scanner import Scanner, ScannerError
 from yaml.tokens import AliasToken
 
-# Custom Scanner Patch
+# --- Custom Scanner Patch ---
 def custom_scan_anchor(self, TokenClass):
     """
-    Custom scan_anchor method for PyYAML’s scanner.
-    
-    This implementation does two things:
-    
-    1. It properly consumes the alias indicator '*' before scanning the alias name.
-    2. It allows a single period ('.') only if it acts as a separator between an import prefix
-       and an alias name. If a period appears in any other context (or more than once), it
-       will raise an error.
+    Custom scan_anchor for PyYAML's Scanner.
+
+    - When the token starts with '&', we scan an anchor name using the default allowed characters,
+      rejecting any period ('.') because periods are reserved.
+    - When the token starts with '*', we scan an alias name, allowing exactly one period to serve
+      as the separator between the import prefix and the anchor name.
+    The token is terminated by whitespace or YAML punctuation.
     """
     start_mark = self.get_mark()
-    
-    # Consume the alias indicator '*' if present.
-    if self.peek() == '*':
-        self.forward()
-    
-    # The first character of the alias name must be alphanumeric or underscore.
-    ch = self.peek()
-    if not (ch.isalnum() or ch == '_'):
-        raise ScannerError("while scanning an alias", start_mark,
-                             f"expected alphabetic or numeric character, but found {ch!r}", self.get_mark())
+    marker = self.peek()  # should be either '&' or '*'
+    if marker not in ('&', '*'):
+        raise ScannerError("while scanning an anchor/alias", start_mark,
+                             f"expected '&' or '*', but found {marker!r}", self.get_mark())
+    self.forward()  # consume the marker
 
-    alias_chars = []
-    dot_seen = False
-    while True:
+    # Define termination characters (this list is a simplified approximation).
+    terminators = ' \t\r\n,[]{}'
+
+    # --- Anchor definition: marker '&'
+    if marker == '&':
+        anchor_chars = []
         ch = self.peek()
-        if not ch:
-            break
-
-        # Allow a single period only if it hasn't been seen yet.
-        if ch == '.':
-            if dot_seen:
-                # Second period encountered; stop scanning.
+        if not (ch.isalnum() or ch == '_'):
+            raise ScannerError("while scanning an anchor", start_mark,
+                                 f"expected alphabetic or numeric character, but found {ch!r}", self.get_mark())
+        while True:
+            ch = self.peek()
+            if not ch or ch in terminators:
                 break
-            dot_seen = True
-            alias_chars.append(ch)
-            self.forward()
-            continue
+            # Do not allow a period in an anchor definition.
+            if ch == '.':
+                raise ScannerError("while scanning an anchor", start_mark,
+                                     f"period not allowed in anchor names: {ch!r}", self.get_mark())
+            if ch.isalnum() or ch in ['_', '-']:
+                anchor_chars.append(ch)
+                self.forward()
+            else:
+                break
+        anchor_name = ''.join(anchor_chars)
+        return TokenClass(anchor_name, start_mark, self.get_mark())
 
-        # Allow alphanumeric and underscore characters.
-        if ch.isalnum() or ch == '_':
-            alias_chars.append(ch)
-            self.forward()
-        else:
-            break
-
-    alias_name = ''.join(alias_chars)
-    
-    # Validate the alias format if a period was used.
-    if dot_seen:
-        if alias_name.startswith('.') or alias_name.endswith('.') or alias_name.count('.') != 1:
+    # --- Alias: marker '*'
+    else:
+        alias_chars = []
+        dot_seen = False
+        ch = self.peek()
+        if not (ch.isalnum() or ch == '_'):
             raise ScannerError("while scanning an alias", start_mark,
-                                 f"invalid alias format with period: {alias_name}", self.get_mark())
-    return TokenClass(alias_name, start_mark, self.get_mark())
+                                 f"expected alphabetic or numeric character, but found {ch!r}", self.get_mark())
+        while True:
+            ch = self.peek()
+            if not ch or ch in terminators:
+                break
+            if ch == '.':
+                if dot_seen:
+                    # If a second period is found, stop scanning here.
+                    break
+                dot_seen = True
+                alias_chars.append(ch)
+                self.forward()
+                continue
+            if ch.isalnum() or ch == '_':
+                alias_chars.append(ch)
+                self.forward()
+            else:
+                break
+        alias_name = ''.join(alias_chars)
+        if dot_seen:
+            # Ensure the period is not at the start or end and occurs exactly once.
+            if alias_name.startswith('.') or alias_name.endswith('.') or alias_name.count('.') != 1:
+                raise ScannerError("while scanning an alias", start_mark,
+                                     f"invalid alias format with period: {alias_name}", self.get_mark())
+        return TokenClass(alias_name, start_mark, self.get_mark())
 
-# Patch the PyYAML Scanner with our custom alias scanner.
+# Monkey-patch PyYAML's Scanner to use our custom scan_anchor.
 Scanner.scan_anchor = custom_scan_anchor
 
-# Custom Loader
-# Subclass yaml.SafeLoader to allow injection of imported anchors.
+# --- Custom Loader ---
+# Subclass yaml.SafeLoader so we can inject imported anchors.
 class ImportExportYAMLLoader(yaml.SafeLoader):
     pass
 
-# Directive Parsing
+# --- Directive Parsing ---
 def _parse_directives(content):
     """
     Scan the YAML content for custom directives and remove them.
@@ -105,7 +125,7 @@ def _parse_directives(content):
         processed_lines.append(line)
     return "\n".join(processed_lines), import_directives, export_directives
 
-# Main Functions
+# --- Main Functionality ---
 def load_imports_exports(file_path, processed_files=None):
     """
     Load a YAML file with custom import and export directives.
@@ -114,7 +134,7 @@ def load_imports_exports(file_path, processed_files=None):
     Imported anchors must be re‑exported explicitly to be passed along.
     
     This recursively loads imported files to gather their exported anchors,
-    prefixes them using a period as a separator, and injects them into the loader
+    prefixes them (using a period as a separator), and injects them into the loader
     before loading the YAML content.
     
     Returns:
@@ -134,13 +154,13 @@ def load_imports_exports(file_path, processed_files=None):
     # Remove custom directives and capture import/export instructions.
     content, import_directives, explicit_exports = _parse_directives(content)
 
-    # Process Imported Anchors
+    # --- Process Imported Anchors ---
     imported_anchors = {}
     for directive in import_directives:
         import_path = os.path.join(os.path.dirname(file_path), directive['path'])
         # Recursively load the imported file to get its exported anchors.
         _, exported = load_imports_exports(import_path, processed_files)
-        # Prefix each exported anchor with the directive's prefix using a period as separator.
+        # Prefix each exported anchor with the directive's prefix using a period.
         for anchor, value in exported.items():
             new_anchor = f"{directive['prefix']}.{anchor}"
             if new_anchor in imported_anchors and imported_anchors[new_anchor] is not value:
@@ -149,7 +169,7 @@ def load_imports_exports(file_path, processed_files=None):
                 )
             imported_anchors[new_anchor] = value
 
-    # Create Loader and Inject Imported Anchors
+    # --- Create Loader and Inject Imported Anchors ---
     loader = ImportExportYAMLLoader(content)
     if not hasattr(loader, 'anchors'):
         loader.anchors = {}
@@ -161,7 +181,7 @@ def load_imports_exports(file_path, processed_files=None):
     # Determine which anchors were defined locally (i.e. not imported).
     local_anchors = {k: v for k, v in loader.anchors.items() if k not in imported_anchors}
 
-    # Prepare Exported Anchors
+    # --- Prepare Exported Anchors ---
     # Local anchors are automatically exported.
     exported_anchors = {}
     exported_anchors.update(local_anchors)
