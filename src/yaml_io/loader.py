@@ -4,17 +4,25 @@ import yaml
 from yaml.scanner import Scanner, ScannerError
 from yaml.tokens import AliasToken
 
-# Custom scanner patch
+# Custom Scanner Patch
 def custom_scan_anchor(self, TokenClass):
     """
-    Custom scan_anchor method for PyYAML's scanner.
+    Custom scan_anchor method for PyYAML’s scanner.
     
-    This implementation allows a single period ('.') only if it acts as a separator
-    between an import prefix and an alias name. In other cases, a period is not allowed.
+    This implementation does two things:
+    
+    1. It properly consumes the alias indicator '*' before scanning the alias name.
+    2. It allows a single period ('.') only if it acts as a separator between an import prefix
+       and an alias name. If a period appears in any other context (or more than once), it
+       will raise an error.
     """
     start_mark = self.get_mark()
-
-    # The first character must be alphanumeric or underscore.
+    
+    # Consume the alias indicator '*' if present.
+    if self.peek() == '*':
+        self.forward()
+    
+    # The first character of the alias name must be alphanumeric or underscore.
     ch = self.peek()
     if not (ch.isalnum() or ch == '_'):
         raise ScannerError("while scanning an alias", start_mark,
@@ -27,14 +35,14 @@ def custom_scan_anchor(self, TokenClass):
         if not ch:
             break
 
-        # Allow a period only if one has not yet been seen.
+        # Allow a single period only if it hasn't been seen yet.
         if ch == '.':
             if dot_seen:
-                # A second period is not allowed; break so the token ends here.
+                # Second period encountered; stop scanning.
                 break
             dot_seen = True
             alias_chars.append(ch)
-            self.forward()  # Consume the period
+            self.forward()
             continue
 
         # Allow alphanumeric and underscore characters.
@@ -42,23 +50,22 @@ def custom_scan_anchor(self, TokenClass):
             alias_chars.append(ch)
             self.forward()
         else:
-            # Stop scanning when a non-valid character is encountered.
             break
 
     alias_name = ''.join(alias_chars)
-
-    # If a period was seen, ensure it is not at the beginning or end and occurs exactly once.
+    
+    # Validate the alias format if a period was used.
     if dot_seen:
         if alias_name.startswith('.') or alias_name.endswith('.') or alias_name.count('.') != 1:
             raise ScannerError("while scanning an alias", start_mark,
                                  f"invalid alias format with period: {alias_name}", self.get_mark())
-
     return TokenClass(alias_name, start_mark, self.get_mark())
 
-# Patch the PyYAML Scanner for the loader
+# Patch the PyYAML Scanner with our custom alias scanner.
 Scanner.scan_anchor = custom_scan_anchor
 
-# We subclass yaml.SafeLoader so we can inject imported anchors.
+# Custom Loader
+# Subclass yaml.SafeLoader to allow injection of imported anchors.
 class ImportExportYAMLLoader(yaml.SafeLoader):
     pass
 
@@ -68,13 +75,13 @@ def _parse_directives(content):
     Scan the YAML content for custom directives and remove them.
     
     Directives:
-    - "#!import <path> as <prefix>" to import anchors from another file.
-    - "#!export ..." to explicitly export imported anchors.
+      - "#!import <path> as <prefix>" to import anchors from another file.
+      - "#!export ..." to explicitly export imported anchors.
     
     Returns:
-      - cleaned YAML content (with directives removed)
-      - a list of import directives (each a dict with 'path' and 'prefix')
-      - a list of explicit export strings.
+      - The cleaned YAML content (with directives removed)
+      - A list of import directives (each a dict with 'path' and 'prefix')
+      - A list of explicit export strings.
     """
     lines = content.splitlines()
     processed_lines = []
@@ -98,7 +105,7 @@ def _parse_directives(content):
         processed_lines.append(line)
     return "\n".join(processed_lines), import_directives, export_directives
 
-# Main functions
+# Main Functions
 def load_imports_exports(file_path, processed_files=None):
     """
     Load a YAML file with custom import and export directives.
@@ -106,8 +113,9 @@ def load_imports_exports(file_path, processed_files=None):
     Anchors defined in this file are automatically available downstream.
     Imported anchors must be re‑exported explicitly to be passed along.
     
-    This recursively loads imported files to gather their exported anchors, prefixes them
-    (using a period as a separator), and injects them into the loader before loading the YAML content.
+    This recursively loads imported files to gather their exported anchors,
+    prefixes them using a period as a separator, and injects them into the loader
+    before loading the YAML content.
     
     Returns:
       A tuple (data, exported_anchors) where 'data' is the parsed YAML data and 
@@ -132,7 +140,7 @@ def load_imports_exports(file_path, processed_files=None):
         import_path = os.path.join(os.path.dirname(file_path), directive['path'])
         # Recursively load the imported file to get its exported anchors.
         _, exported = load_imports_exports(import_path, processed_files)
-        # Prefix each exported anchor with the directive's prefix using a period as a separator.
+        # Prefix each exported anchor with the directive's prefix using a period as separator.
         for anchor, value in exported.items():
             new_anchor = f"{directive['prefix']}.{anchor}"
             if new_anchor in imported_anchors and imported_anchors[new_anchor] is not value:
