@@ -17,6 +17,8 @@ classifiers = [
     "Topic :: Software Development :: Libraries :: Python Modules"
 ]
 
+dynamic = ["dependencies"]
+
 license = { file = "LICENSE.md" }
 
 [project.urls]
