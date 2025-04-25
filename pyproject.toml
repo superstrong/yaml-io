@@ -16,7 +16,8 @@ classifiers = [
     "Programming Language :: Python :: 3.12",
     "Topic :: Software Development :: Libraries :: Python Modules"
 ]
-license = "MIT"
+
+license = { file = "LICENSE.md" }
 
 [project.urls]
 Github = "https://github.com/superstrong/yaml-io"
