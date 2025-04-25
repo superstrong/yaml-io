@@ -1,6 +1,6 @@
 [project]
 name = "yaml-io"
-version = "0.1.4"
+version = "0.1.5"
 authors = [
 { name="Robbie Mitchell" },
 ]
@@ -16,7 +16,6 @@ classifiers = [
     "Programming Language :: Python :: 3.12",
     "Topic :: Software Development :: Libraries :: Python Modules"
 ]
-license = "MIT"
 license-files = ["LICENSE.md"]
 
 [project.urls]
