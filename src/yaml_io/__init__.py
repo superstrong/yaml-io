@@ -2,21 +2,31 @@ import os
 import yaml
 from .loader import load_imports_exports
 
-def safe_load(path_or_stream):
-    # If user passed a filepath, resolve imports first
-    if isinstance(path_or_stream, str) and os.path.exists(path_or_stream):
-        data, _ = load_imports_exports(path_or_stream)
+# stash originals to avoid recursion
+_yaml_safe_load = yaml.safe_load
+_yaml_load = yaml.load
+
+def safe_load(stream_or_path):
+    # file path?
+    if isinstance(stream_or_path, str) and os.path.exists(stream_or_path):
+        data, _ = load_imports_exports(stream_or_path)
         return data
 
-    # If it's a file-like with a name, do the same
-    reader = getattr(path_or_stream, "read", None)
-    if reader and hasattr(path_or_stream, "name") and os.path.exists(path_or_stream.name):
-        data, _ = load_imports_exports(path_or_stream.name)
-        return data
+    # file-like?
+    if hasattr(stream_or_path, "read"):
+        name = getattr(stream_or_path, "name", None)
+        if name and os.path.exists(name):
+            data, _ = load_imports_exports(name)
+            return data
+        # fallback: read in-memory
+        txt = stream_or_path.read()
+        return _yaml_safe_load(txt)
 
-    # Otherwise defer to normal PyYAML
-    return yaml.safe_load(path_or_stream)
+    # anything else (string snippet, etc.)
+    return _yaml_safe_load(stream_or_path)
 
-# Override PyYAML hooks
+# override the global hooks
 yaml.safe_load = safe_load
-yaml.load      = safe_load
+yaml.load = safe_load
+
+__all__ = ["load_imports_exports", "safe_load"]
