@@ -1,6 +1,8 @@
 # YAML-io
 
-This Python library enables YAML anchors to be imported from external files, and re-exported for use in other files, via custom directives. This has a few benefits:
+This Python library enables YAML anchors to be imported from external files via custom directives. It also enables imported anchors to be re-exported, so on file can unify many imports and them export them as one source.
+
+This has a few benefits:
 
 - Re-use the same aliases in multiple files without repeating yourself
 - Use aliases without worrying about reordering your file, because the anchors are defined elsewhere

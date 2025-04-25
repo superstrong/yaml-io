@@ -2,7 +2,7 @@ import setuptools
 
 setuptools.setup(
     name="yaml_io",
-    version="0.1.4",
+    version="0.1.5",
     author="Robbie Mitchell",
     description="Import YAML anchors from external files, and export them for re-use in other files",
     long_description=open("README.md", encoding="utf-8").read(),
