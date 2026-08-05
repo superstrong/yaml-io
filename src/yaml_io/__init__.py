@@ -28,7 +28,7 @@ from .errors import (
 )
 from .loader import YamlIOLoader, load_imports_exports, parse_directives
 
-__version__ = "0.2.0"
+__version__ = "0.2.1"
 
 
 def _open(source):
