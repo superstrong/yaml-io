@@ -1,38 +1,46 @@
 # YAML-io
 
-This Python library enables YAML anchors to be imported from external files via custom directives. It also enables imported anchors to be re-exported, so one file can unify many imports and them export them as one source.
+This Python library enables YAML anchors to be imported from external files via custom directives. It also enables imported anchors to be re-exported, so one file can unify many imports and then export them as one source.
 
 This has a few benefits:
 
 - Re-use the same aliases in multiple files without repeating yourself
 - Use aliases without worrying about reordering your file, because the anchors are defined elsewhere
-- Use multiple layers of imports to logically separate concerns and create versions of files that update all downstream files simultaneously.
+- Use multiple layers of imports to logically separate concerns and create versions of files that update all downstream files simultaneously
 
-## Setup
+## Install
 
-1. If a user calls yaml.load(...) and passes in:
+```
+pip install yaml-io
+```
 
-- A path to a file on disk
+Requires Python 3.11+ and PyYAML 5.4+.
 
-    → _try_file_path_and_load calls load_imports_exports(...) on that file, recursively resolving #!import statements.
+## Usage
 
-- A file object with a valid .name attribute that actually exists on disk
+```python
+import yaml_io
 
-    → same as above.
+data = yaml_io.load("workspace/acme/actions.yml")
+```
 
-- Otherwise, the library just falls back to normal PyYAML behavior (e.g., inline YAML in a string, or a non‑file input).
+`yaml_io.load` accepts a path, an open file object, or a YAML string. For multi-document streams, use `yaml_io.load_all`, which returns a list.
 
-2. There are no code changes.
+Importing `yaml_io` has no side effects. It does not patch PyYAML, so `yaml.safe_load` and everything else in your process behaves exactly as it always did.
+
+If you would rather go through PyYAML directly, pass the loader explicitly:
 
 ```python
 import yaml
-import yaml_io  # triggers the patch
+import yaml_io
 
-with open("some_yaml.yaml") as f:
-    data = yaml.safe_load(f)  # Now automatically supports #!import, #!export
+with open("workspace/acme/actions.yml") as f:
+    data = yaml.load(f, Loader=yaml_io.YamlIOLoader)
 ```
 
-## Usage
+`YamlIOLoader` is built on PyYAML's `SafeConstructor`, so it is as safe as `yaml.safe_load`.
+
+## Directives
 
 Mark directives in your YAML like:
 
@@ -46,41 +54,108 @@ and refer to imported anchors as:
 - *base.progress_check_model
 ```
 
-Anchors defined directly in the file are automatically available to downstream files. Imported anchors need to be re‑exported with a directive like:
+Anchors defined directly in a file are exported automatically. Imported anchors are not: to pass one further downstream, re-export it explicitly.
 
 ```yaml
 #!export base.progress_check_model
 ```
+
+A re-exported anchor loses its original prefix and picks up the prefix of whoever imports it next. Export several at once with commas, or use `*` to re-export everything from one import:
+
+```yaml
+#!export base.model_a, base.model_b
+#!export base.*
+```
+
+Rules worth knowing:
+
+- Import paths are relative to the file containing the directive.
+- Directives must start at column 0. Anything indented is an ordinary YAML comment, so `#!import` inside a block scalar is left alone.
+- Paths containing spaces must be quoted: `#!import "my dir/base.yml" as base`.
+- Directives are file-scoped. In a multi-document file, imported anchors are available in every document, while anchors defined inside a document stay in that document, matching YAML's own scoping.
+- Anchor names (`&name`) may not contain dots. Aliases (`*prefix.name`) may contain exactly one.
 
 ## Versioning Example
 
 A versioned file containing all the anchors we want to define once. Imagine we have multiple files and many anchors.
 
 ```yaml
-./global/versions/v1.2/actions.yml
+# ./global/versions/v1.2/actions.yml
 
-- &anchor1
-- &anchor2
+defs:
+  one: &anchor1 {name: first, retries: 3}
+  two: &anchor2 {name: second, retries: 5}
 ```
 
 A router-like file where we refer to the versioned files and export them for re-use:
-```
-./global/prod-default/base-package.yml
 
-#!import ../../versions/v1.2/acions.yml as a
+```yaml
+# ./global/prod-default/base-package.yml
+
+#!import ../versions/v1.2/actions.yml as a
 
 #!export a.anchor1, a.anchor2
 ```
 
-The most downstream file where all anchors are resolved and used as aliases, such as this example `./workspace/acme/actions.yml`:
+This file has no content of its own, only directives. Loading it directly returns `None`, which is expected; its job is to forward anchors.
+
+The most downstream file, where all anchors are resolved and used as aliases, such as `./workspace/acme/actions.yml`:
 
 ```yaml
+# ./workspace/acme/actions.yml
+
 #!import ../../global/prod-default/base-package.yml as base
 
-- *base.anchor1
-- *base.anchor2
+steps:
+  - *base.anchor1
+  - *base.anchor2
+```
+
+Loading that last file yields:
+
+```python
+{"steps": [{"name": "first", "retries": 3},
+           {"name": "second", "retries": 5}]}
 ```
 
 - One advantage to using the `base-package` intermediary is the ability to change everything from v1.2 to v1.3 with a small number of changes when you're ready.
 
-- One advantage to using the `prod-default` folder is you can create other folders, such as `prod-beta` or `uat-default` and point specific files there instead for testing.
+- One advantage to using the `prod-default` folder is you can create other folders, such as `prod-beta` or `uat-default`, and point specific files there instead for testing.
+
+The same file may be imported along several paths. A diamond, where two intermediaries both import one versioned file, resolves once and is shared.
+
+## Errors
+
+All errors inherit from `yaml_io.YamlIOError`, itself a `ValueError`.
+
+| Error | Raised when |
+|---|---|
+| `CircularImportError` | A file transitively imports itself |
+| `ImportResolutionError` | An `#!import` target cannot be read |
+| `DirectiveError` | An `#!import` or `#!export` line is malformed |
+| `ExportError` | An `#!export` names an anchor that does not exist |
+| `AnchorCollisionError` | Two distinct anchors compete for one name |
+
+Errors from the YAML itself are PyYAML's own, and report the real filename and the correct line number, since directive lines are blanked rather than removed.
+
+## Upgrading from 0.1.x
+
+0.2.0 removes the import-time monkeypatching. Previously `import yaml_io` reassigned `yaml.load` and `yaml.safe_load`, which broke `yaml.safe_load` for every other consumer in the process. Replace:
+
+```python
+import yaml
+import yaml_io
+
+with open("some_yaml.yaml") as f:
+    data = yaml.safe_load(f)
+```
+
+with:
+
+```python
+import yaml_io
+
+data = yaml_io.load("some_yaml.yaml")
+```
+
+`load_imports_exports` is still present and still returns `(data, exported)`, where `exported` maps names to `yaml.Node` objects. It is deprecated in favor of `yaml_io.load`.

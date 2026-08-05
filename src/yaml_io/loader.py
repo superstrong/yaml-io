@@ -1,178 +1,317 @@
+"""Directive parsing and the import/export aware YAML loader."""
+
 import os
 import re
-import io
-import yaml
-from yaml.reader import Reader
-from yaml.scanner import Scanner, ScannerError
-from yaml.parser import Parser
+
 from yaml.composer import Composer
 from yaml.constructor import SafeConstructor
+from yaml.parser import Parser
+from yaml.reader import Reader
 from yaml.resolver import Resolver
 
-###
-# Monkey-patch the Scanner so that aliases can include exactly one dot.
-###
-def custom_scan_anchor(self, TokenClass):
-    start_mark = self.get_mark()
-    marker     = self.peek()
-    if marker not in ("&", "*"):
-        raise ScannerError(
-            "while scanning an anchor/alias", start_mark,
-            f"expected '&' or '*', but found {marker!r}", self.get_mark()
-        )
-    self.forward()  # consume the & or *
+from .errors import (
+    AnchorCollisionError,
+    CircularImportError,
+    DirectiveError,
+    ExportError,
+    ImportResolutionError,
+)
+from .scanner import DottedAliasScanner
 
-    terminators = " \t\r\n,[]{}"
-    # --- definition (&)
-    if marker == "&":
-        name_chars = []
-        ch = self.peek()
-        if not (ch.isalnum() or ch == "_"):
-            raise ScannerError(
-                "while scanning an anchor", start_mark,
-                f"expected alnum or '_', but found {ch!r}", self.get_mark()
-            )
-        while True:
-            ch = self.peek()
-            if not ch or ch in terminators:
-                break
-            if ch == ".":
-                raise ScannerError(
-                    "while scanning an anchor", start_mark,
-                    "periods not allowed in anchor names", self.get_mark()
-                )
-            if ch.isalnum() or ch in ("_", "-"):
-                name_chars.append(ch)
-                self.forward()
-            else:
-                break
-        return TokenClass("".join(name_chars), start_mark, self.get_mark())
+# Directives are recognised only at column 0. That is a sufficient guard against
+# false positives inside block scalars, whose content must always be indented.
+_IMPORT_RE = re.compile(
+    r'^#!import[ \t]+(?:"([^"]+)"|\'([^\']+)\'|(\S+))'
+    r"[ \t]+as[ \t]+([A-Za-z_][A-Za-z0-9_-]*)[ \t]*$"
+)
+_EXPORT_RE = re.compile(r"^#!export[ \t]+(.+?)[ \t]*$")
 
-    # --- alias (*)
-    alias_chars = []
-    dot_seen    = False
-    ch = self.peek()
-    if not (ch.isalnum() or ch == "_"):
-        raise ScannerError(
-            "while scanning an alias", start_mark,
-            f"expected alnum or '_', but found {ch!r}", self.get_mark()
-        )
-    while True:
-        ch = self.peek()
-        if not ch or ch in terminators:
-            break
-        if ch == ".":
-            if dot_seen:
-                raise ScannerError(
-                    "while scanning an alias", start_mark,
-                    "only one period allowed in an imported alias", self.get_mark()
-                )
-            dot_seen = True
-            alias_chars.append(ch)
-            self.forward()
+# Catches a directive that failed the strict patterns above, so a typo becomes a
+# clear error instead of being silently treated as an ordinary YAML comment.
+_LOOSE_RE = re.compile(r"^#!(import|export)\b")
+
+_EXPORT_NAME_RE = re.compile(
+    r"^(?:([A-Za-z_][A-Za-z0-9_-]*)\.)?([A-Za-z_][A-Za-z0-9_-]*|\*)$"
+)
+
+
+class Import:
+    """One resolved ``#!import`` directive."""
+
+    __slots__ = ("path", "prefix", "line")
+
+    def __init__(self, path: str, prefix: str, line: int):
+        self.path = path
+        self.prefix = prefix
+        self.line = line
+
+
+def parse_directives(text: str) -> tuple[str, list[Import], list[str]]:
+    """Split *text* into YAML content, imports, and export names.
+
+    Directive lines are replaced with empty lines rather than removed, so line
+    and column numbers in parser errors still match the original file.
+    """
+    kept: list[str] = []
+    imports: list[Import] = []
+    exports: list[str] = []
+
+    for lineno, line in enumerate(text.splitlines(), start=1):
+        match = _IMPORT_RE.match(line)
+        if match:
+            dquoted, squoted, bare, prefix = match.groups()
+            imports.append(Import(dquoted or squoted or bare, prefix, lineno))
+            kept.append("")
             continue
-        if ch.isalnum() or ch in ("_", "-"):
-            alias_chars.append(ch)
-            self.forward()
+
+        match = _EXPORT_RE.match(line)
+        if match:
+            for name in match.group(1).split(","):
+                name = name.strip()
+                if name:
+                    exports.append(name)
+            kept.append("")
             continue
-        break
 
-    alias = "".join(alias_chars)
-    if dot_seen:
-        if alias.startswith(".") or alias.endswith(".") or alias.count(".") != 1:
-            raise ScannerError(
-                "while scanning an alias", start_mark,
-                f"invalid imported alias format: {alias}", self.get_mark()
+        if _LOOSE_RE.match(line):
+            raise DirectiveError(
+                f"line {lineno}: malformed directive: {line.strip()!r}\n"
+                "  expected: #!import <path> as <prefix>\n"
+                "        or: #!export <name>[, <name>...]"
             )
-    return TokenClass(alias, start_mark, self.get_mark())
 
-# apply the patch
-Scanner.scan_anchor = custom_scan_anchor
+        kept.append(line)
 
-###
-# Build a proper SafeLoader subclass that wires up Reader→Scanner→Parser→Composer→Constructor→Resolver
-###
-class ImportExportYAMLLoader(
-    Reader, Scanner, Parser, Composer, SafeConstructor, Resolver
+    return "\n".join(kept), imports, exports
+
+
+class YamlIOLoader(
+    Reader, DottedAliasScanner, Parser, Composer, SafeConstructor, Resolver
 ):
-    def __init__(self, stream):
-        Reader.__init__(self, stream)
-        Scanner.__init__(self)
+    """A ``SafeLoader`` that resolves ``#!import`` and ``#!export`` directives.
+
+    Usable directly with PyYAML::
+
+        with open("config.yml") as f:
+            data = yaml.load(f, Loader=YamlIOLoader)
+
+    The stream is read in full and its directives resolved during ``__init__``,
+    which is what lets the loader recover the base directory for relative
+    imports from ``stream.name``.
+    """
+
+    def __init__(self, stream, name=None, _stack=None, _cache=None):
+        if hasattr(stream, "read"):
+            name = name or getattr(stream, "name", None)
+            text = stream.read()
+        else:
+            text = stream
+
+        if isinstance(text, bytes):
+            text = text.decode("utf-8")
+
+        base_dir = os.path.dirname(os.path.abspath(name)) if name else os.getcwd()
+
+        content, imports, exports = parse_directives(text)
+        self._imported_anchors = _resolve_imports(
+            imports,
+            base_dir,
+            name,
+            _stack if _stack is not None else [],
+            _cache if _cache is not None else {},
+        )
+        self._export_names = exports
+
+        # Anchors defined by this file, accumulated across every document.
+        self.defined_anchors: dict = {}
+
+        Reader.__init__(self, content)
+        DottedAliasScanner.__init__(self)
         Parser.__init__(self)
         Composer.__init__(self)
         SafeConstructor.__init__(self)
         Resolver.__init__(self)
 
+        # Reader derives a name from the stream; restore the real path so error
+        # messages name the file instead of "<unicode string>".
+        if name:
+            self.name = name
 
-_import_re  = re.compile(r"^#!import\s+(.+?)\s+as\s+(\w+)")
-_export_re  = re.compile(r"^#!export\s+(.+)")
-def _parse_directives(text):
-    lines = text.splitlines()
-    kept, imports, exports = [], [], []
-    for L in lines:
-        m = _import_re.match(L)
-        if m:
-            imports.append({"path": m.group(1).strip(), "prefix": m.group(2).strip()})
-            continue
-        m = _export_re.match(L)
-        if m:
-            exports.extend([a.strip() for a in m.group(1).split(",")])
-            continue
-        kept.append(L)
-    return "\n".join(kept), imports, exports
+    def compose_document(self):
+        """Seed imported anchors per document and capture the locals.
+
+        PyYAML clears ``self.anchors`` at the end of every document, so imported
+        anchors must be re-seeded for each one and local anchors harvested
+        before the reset. Locals correctly do not leak between documents, which
+        matches YAML semantics, while imports are visible in all of them.
+        """
+        self.anchors.update(self._imported_anchors)
+
+        self.get_event()  # DOCUMENT-START
+        node = self.compose_node(None, None)
+        self.get_event()  # DOCUMENT-END
+
+        for key, anchor_node in self.anchors.items():
+            # Identity, not name: an injected anchor is the same object we put in.
+            if self._imported_anchors.get(key) is not anchor_node:
+                self.defined_anchors[key] = anchor_node
+
+        self.anchors = {}
+        return node
+
+    def exported_anchors(self) -> dict:
+        """Anchors this file makes available to importers.
+
+        Locally defined anchors are exported automatically. Imported anchors
+        must be re-exported explicitly, and lose their prefix when they are, so
+        ``#!export a.thing`` is aliased downstream as ``*<prefix>.thing``.
+        """
+        exported = dict(self.defined_anchors)
+        origin: dict[str, str] = {name: "a local definition" for name in exported}
+
+        for name in self._export_names:
+            match = _EXPORT_NAME_RE.match(name)
+            if not match:
+                raise ExportError(f"invalid export name: {name!r}")
+            prefix, local = match.groups()
+
+            if local == "*":
+                if prefix is None:
+                    raise ExportError(
+                        "'#!export *' is not valid; "
+                        "local anchors are exported automatically"
+                    )
+                matched = {
+                    key.split(".", 1)[1]: node
+                    for key, node in self._imported_anchors.items()
+                    if key.startswith(prefix + ".")
+                }
+                if not matched:
+                    raise ExportError(
+                        f"cannot export {name!r}: no anchors imported under "
+                        f"prefix {prefix!r}"
+                    )
+                selected = matched
+            elif prefix is None:
+                if local not in self.defined_anchors:
+                    raise ExportError(
+                        f"cannot export unknown anchor {local!r}; "
+                        f"this file defines: {sorted(self.defined_anchors) or 'none'}"
+                    )
+                continue  # already auto-exported
+            else:
+                key = f"{prefix}.{local}"
+                if key not in self._imported_anchors:
+                    raise ExportError(
+                        f"cannot export unknown anchor {key!r}; "
+                        f"available: {sorted(self._imported_anchors) or 'none'}"
+                    )
+                selected = {local: self._imported_anchors[key]}
+
+            for out_name, node in selected.items():
+                if out_name in exported and exported[out_name] is not node:
+                    raise AnchorCollisionError(
+                        f"export {name!r} would redefine {out_name!r}, "
+                        f"already exported from {origin[out_name]}"
+                    )
+                exported[out_name] = node
+                origin[out_name] = repr(name)
+
+        return exported
+
+
+def _resolve_imports(
+    imports: list[Import],
+    base_dir: str,
+    importer: str | None,
+    stack: list[str],
+    cache: dict[str, dict],
+) -> dict:
+    """Load every import and merge their exports into one prefixed namespace."""
+    anchors: dict = {}
+
+    for directive in imports:
+        target = os.path.normpath(os.path.join(base_dir, directive.path))
+        sub_exports = _load_exports(target, importer, directive, stack, cache)
+
+        for name, node in sub_exports.items():
+            key = f"{directive.prefix}.{name}"
+            if key in anchors and anchors[key] is not node:
+                raise AnchorCollisionError(
+                    f"anchor collision for {key!r}; two imports use prefix "
+                    f"{directive.prefix!r}"
+                )
+            anchors[key] = node
+
+    return anchors
+
+
+def _load_exports(
+    path: str,
+    importer: str | None,
+    directive: Import,
+    stack: list[str],
+    cache: dict[str, dict],
+) -> dict:
+    """Return the anchors *path* exports, composing it at most once."""
+    real = os.path.realpath(path)
+
+    if real in stack:
+        chain = " -> ".join(stack + [real])
+        raise CircularImportError(f"circular import detected: {chain}")
+
+    if real in cache:
+        return cache[real]
+
+    where = f"{importer}, line {directive.line}" if importer else "the entry file"
+    try:
+        with open(path, "r", encoding="utf-8") as handle:
+            text = handle.read()
+    except OSError as exc:
+        raise ImportResolutionError(
+            f"cannot import {directive.path!r} (from {where}): {exc.strerror}: {path}"
+        ) from exc
+
+    stack.append(real)
+    try:
+        loader = YamlIOLoader(text, name=path, _stack=stack, _cache=cache)
+        try:
+            # Compose only. An imported file's Python data is never used, only
+            # its nodes, so constructing it would be wasted work. Subtrees that
+            # are actually aliased get constructed by the root loader.
+            while loader.check_node():
+                loader.get_node()
+            exports = loader.exported_anchors()
+        finally:
+            loader.dispose()
+    finally:
+        stack.pop()
+
+    cache[real] = exports
+    return exports
+
 
 def load_imports_exports(file_path, processed=None):
+    """Load *file_path*, returning ``(data, exported_anchors)``.
+
+    Retained for backwards compatibility. Values in ``exported_anchors`` are
+    ``yaml.Node`` objects, not constructed Python values. Prefer
+    :func:`yaml_io.load`, which returns just the data.
+
+    .. deprecated:: 0.2.0
     """
-    Returns (data_obj, exported_anchors_dict)
-    """
-    if processed is None:
-        processed = set()
-    absp = os.path.abspath(file_path)
-    if absp in processed:
-        raise ValueError(f"Circular import detected: {file_path}")
-    processed.add(absp)
+    stack: list[str] = []
+    cache: dict[str, dict] = {}
 
-    raw = open(file_path, "r", encoding="utf-8").read()
-    content, imports, exports = _parse_directives(raw)
+    with open(file_path, "r", encoding="utf-8") as handle:
+        text = handle.read()
 
-    # recursively load all anchors from imports
-    imported_anchors = {}
-    for d in imports:
-        impath = os.path.join(os.path.dirname(file_path), d["path"])
-        _, sub_exported = load_imports_exports(impath, processed)
-        for name, node in sub_exported.items():
-            pref = f"{d['prefix']}.{name}"
-            if pref in imported_anchors and imported_anchors[pref] is not node:
-                raise ValueError(f"Anchor collision for '{pref}'")
-            imported_anchors[pref] = node
+    loader = YamlIOLoader(text, name=file_path, _stack=stack, _cache=cache)
+    try:
+        data = loader.get_single_data()
+        return data, loader.exported_anchors()
+    finally:
+        loader.dispose()
 
-    # run the actual loader
-    stream = io.StringIO(content)
-    loader = ImportExportYAMLLoader(stream)
-    # inject all imported anchors *before* parsing
-    loader.anchors.update(imported_anchors)
 
-    # explicit parse → construct
-    root_node = loader.get_single_node()
-    data     = loader.construct_document(root_node)
-
-    # figure out what this file defines locally
-    local = {
-        k: v
-        for k, v in loader.anchors.items()
-        if k not in imported_anchors
-    }
-
-    # everything in `local` is auto-exported; imported anchors must be explicitly re-exported
-    exported = dict(local)
-    for e in exports:
-        if "." in e:
-            pfx, nm = e.split(".", 1)
-            key = f"{pfx}.{nm}"
-            if key in loader.anchors:
-                exported[nm] = loader.anchors[key]
-        else:
-            if e in loader.anchors:
-                exported[e] = loader.anchors[e]
-
-    return data, exported
+__all__ = ["YamlIOLoader", "parse_directives", "load_imports_exports"]
