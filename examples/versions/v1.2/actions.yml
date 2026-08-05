@@ -1,0 +1,19 @@
+# Version 1.2 of the shared policy definitions.
+#
+# This file is the single source of truth for these values. It has no imports
+# of its own. Anchors defined directly in a file are exported automatically,
+# so nothing here needs an #!export directive.
+
+policies:
+  retry: &retry_policy
+    attempts: 3
+    backoff: exponential
+    initial_delay_seconds: 2
+
+  timeout: &timeout_policy
+    seconds: 300
+    on_expire: fail
+
+  notify: &notify_policy
+    on_failure: ["#eng-alerts"]
+    on_success: []

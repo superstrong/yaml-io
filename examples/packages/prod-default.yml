@@ -1,0 +1,13 @@
+# The stable package. Workspaces import this, not a version directly.
+#
+# Imported anchors are NOT re-exported automatically, so they are listed
+# explicitly below. Naming them one by one is the precise form: it documents
+# the package's surface, and a typo raises ExportError instead of failing
+# later as a confusing undefined-alias error downstream.
+#
+# To move every workspace on this channel from v1.2 to v1.3, change the single
+# import line below. Nothing downstream changes.
+
+#!import ../versions/v1.2/actions.yml as v
+
+#!export v.retry_policy, v.timeout_policy, v.notify_policy

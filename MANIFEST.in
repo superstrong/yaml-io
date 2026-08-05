@@ -1,0 +1,7 @@
+include LICENSE.md
+include README.md
+
+# tests/test_examples.py asserts against these files, so an sdist that ships
+# the tests must ship the examples too or it fails its own test suite.
+recursive-include examples *.yml *.yaml *.py *.md
+recursive-include tests *.py

@@ -42,6 +42,19 @@ with open("workspace/acme/actions.yml") as f:
 
 `load_imports_exports` is also present, returning `(data, exported)` where `exported` maps names to `yaml.Node` objects. It is deprecated in favor of `yaml_io.load`.
 
+## Try it
+
+The [`examples/`](examples/) directory holds a complete, working config tree: two versioned policy files, two package files that select between them, and two workspaces that differ only by which package they import.
+
+```
+git clone https://github.com/superstrong/yaml-io
+cd yaml-io
+pip install yaml-io
+python examples/show.py
+```
+
+That prints both workspaces fully resolved, showing the same alias landing on different values depending on one import line. See [`examples/README.md`](examples/README.md) for a walkthrough, including how to break it on purpose and what error each mistake produces.
+
 ## Directives
 
 Mark directives in your YAML like:

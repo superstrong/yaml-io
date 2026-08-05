@@ -1,0 +1,20 @@
+# A workspace on the beta channel.
+#
+# This file is identical to acme/actions.yml except for the import line. That
+# one line is the whole difference between running v1.2 and v1.3 policies.
+
+#!import ../../packages/prod-beta.yml as base
+
+workspace: globex
+
+jobs:
+  - name: nightly-sync
+    schedule: "0 2 * * *"
+    retry: *base.retry_policy
+    timeout: *base.timeout_policy
+    notify: *base.notify_policy
+
+  - name: hourly-check
+    schedule: "0 * * * *"
+    retry: *base.retry_policy
+    timeout: *base.timeout_policy

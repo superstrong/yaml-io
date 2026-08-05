@@ -1,0 +1,13 @@
+# The beta package, pointing at v1.3.
+#
+# Same role as prod-default.yml, one version ahead. Point a workspace here to
+# try new policy values without touching the stable channel.
+#
+# This one uses the wildcard form, `v.*`, which re-exports everything the
+# import provides. Shorter, and it keeps up automatically as the upstream file
+# gains anchors. Use the explicit form when you want the package's surface
+# pinned and reviewable; use the wildcard when you want it to track upstream.
+
+#!import ../versions/v1.3/actions.yml as v
+
+#!export v.*

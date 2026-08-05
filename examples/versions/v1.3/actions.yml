@@ -1,0 +1,19 @@
+# Version 1.3 of the shared policy definitions.
+#
+# Same anchor names as v1.2, different values. Because downstream files refer
+# to anchors by name and never to a version number, moving a workspace from
+# v1.2 to v1.3 is a one-line change in a package file.
+
+policies:
+  retry: &retry_policy
+    attempts: 5
+    backoff: linear
+    initial_delay_seconds: 1
+
+  timeout: &timeout_policy
+    seconds: 900
+    on_expire: warn
+
+  notify: &notify_policy
+    on_failure: ["#eng-alerts", "#oncall"]
+    on_success: ["#deploys"]

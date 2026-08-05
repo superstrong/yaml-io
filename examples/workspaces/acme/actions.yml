@@ -1,0 +1,21 @@
+# A workspace on the stable channel.
+#
+# Note what is NOT here: no version numbers, no repeated policy values, and no
+# ordering constraint. The anchors are defined two files away, so they can be
+# used as aliases anywhere in this document.
+
+#!import ../../packages/prod-default.yml as base
+
+workspace: acme
+
+jobs:
+  - name: nightly-sync
+    schedule: "0 2 * * *"
+    retry: *base.retry_policy
+    timeout: *base.timeout_policy
+    notify: *base.notify_policy
+
+  - name: hourly-check
+    schedule: "0 * * * *"
+    retry: *base.retry_policy
+    timeout: *base.timeout_policy

@@ -338,6 +338,56 @@ def test_unknown_local_export_raises(tree):
         yaml_io.load(root / "top.yml")
 
 
+def test_redundant_local_export_is_accepted(tree):
+    """Locals export automatically; naming one anyway is allowed, not an error."""
+    root = tree(
+        {
+            "leaf.yml": "a: &one 1\n#!export one\n",
+            "top.yml": "#!import leaf.yml as l\nv: *l.one\n",
+        }
+    )
+    assert yaml_io.load(root / "top.yml") == {"v": 1}
+
+
+def test_invalid_export_name_raises(tree):
+    root = tree({"top.yml": "a: &one 1\n#!export 1nope\n"})
+    with pytest.raises(ExportError, match="invalid export name"):
+        yaml_io.load(root / "top.yml")
+
+
+def test_bare_wildcard_export_raises(tree):
+    root = tree({"top.yml": "a: &one 1\n#!export *\n"})
+    with pytest.raises(ExportError, match="not valid"):
+        yaml_io.load(root / "top.yml")
+
+
+def test_wildcard_export_of_unknown_prefix_raises(tree):
+    root = tree(
+        {
+            "leaf.yml": "a: &one 1\n",
+            "top.yml": "#!import leaf.yml as l\n#!export nosuch.*\n",
+        }
+    )
+    with pytest.raises(ExportError, match="no anchors imported under prefix"):
+        yaml_io.load(root / "top.yml")
+
+
+def test_two_imports_sharing_a_prefix_collide(tree):
+    root = tree(
+        {
+            "x.yml": "a: &dup 1\n",
+            "y.yml": "a: &dup 2\n",
+            "top.yml": "#!import x.yml as p\n#!import y.yml as p\nv: *p.dup\n",
+        }
+    )
+    with pytest.raises(AnchorCollisionError, match="p.dup"):
+        yaml_io.load(root / "top.yml")
+
+
+def test_bytes_input_is_decoded(tree):
+    assert yaml_io.load(b"a: 1\nb: 2\n") == {"a": 1, "b": 2}
+
+
 def test_missing_import_names_the_importing_file(tree):
     root = tree({"top.yml": "#!import ./missing.yml as m\nk: 1\n"})
     with pytest.raises(ImportResolutionError) as excinfo:
