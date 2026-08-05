@@ -40,6 +40,8 @@ with open("workspace/acme/actions.yml") as f:
 
 `YamlIOLoader` is built on PyYAML's `SafeConstructor`, so it is as safe as `yaml.safe_load`.
 
+`load_imports_exports` is also present, returning `(data, exported)` where `exported` maps names to `yaml.Node` objects. It is deprecated in favor of `yaml_io.load`.
+
 ## Directives
 
 Mark directives in your YAML like:
@@ -137,25 +139,3 @@ All errors inherit from `yaml_io.YamlIOError`, itself a `ValueError`.
 | `AnchorCollisionError` | Two distinct anchors compete for one name |
 
 Errors from the YAML itself are PyYAML's own, and report the real filename and the correct line number, since directive lines are blanked rather than removed.
-
-## Upgrading from 0.1.x
-
-0.2.0 removes the import-time monkeypatching. Previously `import yaml_io` reassigned `yaml.load` and `yaml.safe_load`, which broke `yaml.safe_load` for every other consumer in the process. Replace:
-
-```python
-import yaml
-import yaml_io
-
-with open("some_yaml.yaml") as f:
-    data = yaml.safe_load(f)
-```
-
-with:
-
-```python
-import yaml_io
-
-data = yaml_io.load("some_yaml.yaml")
-```
-
-`load_imports_exports` is still present and still returns `(data, exported)`, where `exported` maps names to `yaml.Node` objects. It is deprecated in favor of `yaml_io.load`.
